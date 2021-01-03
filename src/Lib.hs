@@ -83,10 +83,10 @@ instance Component MovingDown where type Storage MovingDown = A.Unique MovingDow
 data MovingLeft = MovingLeft deriving (Show)
 instance Component MovingLeft where type Storage MovingLeft = A.Unique MovingLeft
 
--- | sprite used to display entity
-newtype Sprite = Sprite SpriteType
+-- | for visible entities
+newtype Visible = Visible SpriteType
 
-instance Component Sprite where type Storage Sprite = A.Map Sprite
+instance Component Visible where type Storage Visible = A.Map Visible
 
 {- | entity size, scaled to grid. so a size of (V2 1 1) will take up
  one cell on the grid
@@ -94,6 +94,11 @@ instance Component Sprite where type Storage Sprite = A.Map Sprite
 newtype Size = Size (SDL.V2 Int) deriving (Show)
 
 instance Component Size where type Storage Size = A.Map Size
+
+-- | for entities that can't be passed through by other solid entities
+data Solid = Solid
+
+instance Component Solid where type Storage Solid = A.Unique Solid
 
 A.makeWorld
     "World"
@@ -108,14 +113,12 @@ A.makeWorld
     , ''MovingRight
     , ''MovingDown
     , ''MovingLeft
-    , ''Sprite
+    , ''Visible
+    , ''Solid
     , ''Size
     ]
 
 type System' a = A.System World a
-
-playerSpeed :: Int
-playerSpeed = 1
 
 position :: SDL.V2 Int -> Position
 position pos = Position pos $ fromIntegral <$> pos
@@ -126,9 +129,13 @@ makePlayer =
         ( Player
         , position 5
         , Velocity 0
-        , Sprite SpritePlayer
+        , Visible SpritePlayer
+        , Solid
         , Size 1
         )
+
+makeWall :: System' A.Entity
+makeWall = A.newEntity (position 7, Visible SpritePlayer, Solid, Size 1)
 
 initialize :: System' ()
 initialize = do
@@ -148,6 +155,7 @@ initialize = do
     _spriteBankEty <- A.newEntity (GSpriteBank $ Map.fromList [(SpritePlayer, playerTexture)])
 
     _player <- makePlayer
+    _wall <- makeWall
 
     return ()
 
@@ -160,8 +168,15 @@ stepPosition dT = A.cmapM $ \(Position p dp, Velocity v) -> do
     (GMoveTime moveTime) <- A.get A.global
     if
             | moveTime <= 0 && v /= 0 -> do
-                A.global A.$= GMoveTime turnTime
-                return $ Position (p + v) (fromIntegral <$> p)
+                solidAtNewPos <-
+                    A.cfold
+                        (\b (Position op _, Solid) -> b || p + v == op)
+                        False
+                if solidAtNewPos
+                    then return $ Position p (fromIntegral <$> p)
+                    else do
+                        A.global A.$= GMoveTime turnTime
+                        return $ Position (p + v) (fromIntegral <$> p)
             | moveTime > 0 -> do
                 A.global A.$= GMoveTime (moveTime - dT)
                 return $ Position p (dp + (fromIntegral <$> v) ^/ turnTime ^* dT)
@@ -179,14 +194,10 @@ handleEvent :: SDL.Event -> System' ()
 handleEvent event = case SDL.eventPayload event of
     SDL.KeyboardEvent keyboardEvent ->
         case SDL.keysymKeycode (SDL.keyboardEventKeysym keyboardEvent) of
-            SDL.KeycodeLeft -> moveLeft keyboardEvent
-            SDL.KeycodeRight -> moveRight keyboardEvent
-            SDL.KeycodeUp -> moveUp keyboardEvent
-            SDL.KeycodeDown -> moveDown keyboardEvent
-            SDL.KeycodeH -> moveLeft keyboardEvent
-            SDL.KeycodeL -> moveRight keyboardEvent
-            SDL.KeycodeK -> moveUp keyboardEvent
-            SDL.KeycodeJ -> moveDown keyboardEvent
+            k | k == SDL.KeycodeLeft || k == SDL.KeycodeH -> moveLeft keyboardEvent
+            k | k == SDL.KeycodeRight || k == SDL.KeycodeL -> moveRight keyboardEvent
+            k | k == SDL.KeycodeUp || k == SDL.KeycodeK -> moveUp keyboardEvent
+            k | k == SDL.KeycodeDown || k == SDL.KeycodeJ -> moveDown keyboardEvent
             SDL.KeycodeY -> moveUp keyboardEvent >> moveLeft keyboardEvent
             SDL.KeycodeU -> moveUp keyboardEvent >> moveRight keyboardEvent
             SDL.KeycodeB -> moveDown keyboardEvent >> moveLeft keyboardEvent
@@ -220,16 +231,16 @@ stepPlayerMovement = do
     A.cmap $ \(Player, Velocity (SDL.V2 _ _)) -> Velocity 0
 
     A.cmap $ \(Player, MovingLeft, Velocity (SDL.V2 x y)) ->
-        Velocity (SDL.V2 (x - playerSpeed) y)
+        Velocity (SDL.V2 (x - 1) y)
 
     A.cmap $ \(Player, MovingRight, Velocity (SDL.V2 x y)) ->
-        Velocity (SDL.V2 (x + playerSpeed) y)
+        Velocity (SDL.V2 (x + 1) y)
 
     A.cmap $ \(Player, MovingUp, Velocity (SDL.V2 x y)) ->
-        Velocity (SDL.V2 x (y - playerSpeed))
+        Velocity (SDL.V2 x (y - 1))
 
     A.cmap $ \(Player, MovingDown, Velocity (SDL.V2 x y)) ->
-        Velocity (SDL.V2 x (y + playerSpeed))
+        Velocity (SDL.V2 x (y + 1))
 
 -- how big each cell on the grid is in pixels
 cellSize :: SDL.V2 Int
@@ -240,7 +251,7 @@ render = do
     (GRenderer renderer) <- A.get A.global
     SDL.clear renderer
     SDL.rendererDrawColor renderer $= SDL.V4 0 0 0 255
-    A.cmapM_ $ \(Size size, Position _ displayPosition, Sprite sprite) -> do
+    A.cmapM_ $ \(Size size, Position _ displayPosition, Visible sprite) -> do
         (GSpriteBank spriteBank) <- A.get A.global
         let texture = spriteBank Map.! sprite
         SDL.copyEx
