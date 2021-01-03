@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
@@ -9,10 +10,11 @@ module Lib where
 
 import Apecs (Component (Storage), Has (..), SystemT (SystemT), asks, explInit)
 import qualified Apecs as A
+import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Data.Map (Map)
 import qualified Data.Map as Map
-import SDL (($=), (*^))
+import SDL (($=), (^*), (^/))
 import qualified SDL
 import System.Exit (exitSuccess)
 
@@ -34,13 +36,24 @@ instance Semigroup GSpriteBank where (<>) = (<>)
 instance Monoid GSpriteBank where mempty = mempty
 instance Component GSpriteBank where type Storage GSpriteBank = A.Global GSpriteBank
 
+newtype GMoveTime = GMoveTime Double
+instance Semigroup GMoveTime where (<>) = (<>)
+instance Monoid GMoveTime where mempty = mempty
+instance Component GMoveTime where type Storage GMoveTime = A.Global GMoveTime
+
 data Player = Player deriving (Show)
 instance A.Component Player where type Storage Player = A.Unique Player
 
-newtype Position = Position (SDL.V2 Double) deriving (Show)
+data Position
+    = Position
+        (SDL.V2 Int)
+        -- ^ actual position
+        (SDL.V2 Double)
+        -- ^ display position
+    deriving (Show)
 instance A.Component Position where type Storage Position = A.Map Position
 
-newtype Velocity = Velocity (SDL.V2 Double) deriving (Show)
+newtype Velocity = Velocity (SDL.V2 Int) deriving (Show)
 instance A.Component Velocity where type Storage Velocity = A.Map Velocity
 
 data MovingUp = MovingUp deriving (Show)
@@ -63,6 +76,7 @@ A.makeWorld
     [ ''GRenderer
     , ''GWindow
     , ''GSpriteBank
+    , ''GMoveTime
     , ''Player
     , ''Position
     , ''Velocity
@@ -76,17 +90,20 @@ A.makeWorld
 
 type System' a = A.System World a
 
-playerSpeed :: Double
-playerSpeed = 100
+playerSpeed :: Int
+playerSpeed = 1
+
+position :: SDL.V2 Int -> Position
+position pos = Position pos $ fromIntegral <$> pos
 
 makePlayer :: System' A.Entity
 makePlayer =
     A.newEntity
         ( Player
-        , Position 200
+        , position 5
         , Velocity 0
         , Sprite SpritePlayer
-        , Size 32
+        , Size 1
         )
 
 initialize :: System' ()
@@ -101,21 +118,36 @@ initialize = do
     renderer <- liftIO $ SDL.createRenderer window (-1) SDL.defaultRenderer
     _windowEty <- A.newEntity (GWindow window)
     _rendererEty <- A.newEntity (GRenderer renderer)
+    _moveTimeEty <- A.newEntity (GMoveTime 0)
 
-    playerS <- liftIO $ SDL.loadBMP "media/megumin.bmp"
-    player <- liftIO $ SDL.createTextureFromSurface renderer playerS
-    _spriteBankEty <- A.newEntity (GSpriteBank $ Map.fromList [(SpritePlayer, player)])
+    playerSprite <- liftIO $ SDL.loadBMP "media/megumin.bmp"
+    playerTexture <- liftIO $ SDL.createTextureFromSurface renderer playerSprite
+    _spriteBankEty <- A.newEntity (GSpriteBank $ Map.fromList [(SpritePlayer, playerTexture)])
 
     _player <- makePlayer
 
     return ()
 
+turnTime :: Double
+turnTime = 0.125
+
 stepPosition :: Double -> System' ()
-stepPosition dT = A.cmap $ \(Position p, Velocity v) -> Position (p + dT *^ v)
+stepPosition dT = A.cmapM $ \(Position p dp, Velocity v) -> do
+    (GMoveTime moveTime) <- A.get A.global
+    if
+            | moveTime <= 0 && v /= 0 -> do
+                A.global A.$= GMoveTime turnTime
+                return $ Position (p + v) (fromIntegral <$> p)
+            | moveTime > 0 -> do
+                A.global A.$= GMoveTime (moveTime - dT)
+                return $ Position p (dp + (fromIntegral <$> v) ^/ turnTime ^* dT)
+            | otherwise -> return $ Position p (fromIntegral <$> p)
 
 step :: Double -> System' ()
 step dT = do
-    stepPlayerMovement
+    (GMoveTime moveTime) <- A.get A.global
+    when (moveTime <= 0) $ do
+        stepPlayerMovement
     stepPosition dT
     render
 
@@ -157,12 +189,15 @@ stepPlayerMovement = do
     A.cmap $ \(Player, MovingDown, Velocity (SDL.V2 x y)) ->
         Velocity (SDL.V2 x (y + playerSpeed))
 
+cellSize :: SDL.V2 Int
+cellSize = 32
+
 render :: System' ()
 render = do
     (GRenderer renderer) <- A.get A.global
     SDL.clear renderer
     SDL.rendererDrawColor renderer $= SDL.V4 0 0 0 255
-    A.cmapM_ $ \(Size size, Position position, Sprite sprite) -> do
+    A.cmapM_ $ \(Size size, Position _ displayPosition, Sprite sprite) -> do
         (GSpriteBank spriteBank) <- A.get A.global
         let texture = spriteBank Map.! sprite
         SDL.copyEx
@@ -171,8 +206,8 @@ render = do
             Nothing
             ( Just
                 ( SDL.Rectangle
-                    (SDL.P $ fmap round position)
-                    (fmap fromIntegral size)
+                    (SDL.P $ round <$> displayPosition * fmap fromIntegral cellSize)
+                    (fromIntegral <$> size * cellSize)
                 )
             )
             0
