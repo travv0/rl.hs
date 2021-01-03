@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE MultiWayIf #-}
@@ -152,7 +153,7 @@ initialize = do
 
 -- | how fast transition between positions should be, smaller number is faster
 turnTime :: Double
-turnTime = 0.125
+turnTime = 0.2
 
 stepPosition :: Double -> System' ()
 stepPosition dT = A.cmapM $ \(Position p dp, Velocity v) -> do
@@ -178,23 +179,41 @@ handleEvent :: SDL.Event -> System' ()
 handleEvent event = case SDL.eventPayload event of
     SDL.KeyboardEvent keyboardEvent ->
         case SDL.keysymKeycode (SDL.keyboardEventKeysym keyboardEvent) of
-            SDL.KeycodeLeft -> case SDL.keyboardEventKeyMotion keyboardEvent of
-                SDL.Pressed -> A.cmap $ \Player -> MovingLeft
-                SDL.Released -> A.cmap $ \Player -> A.Not @MovingLeft
-            SDL.KeycodeRight -> case SDL.keyboardEventKeyMotion keyboardEvent of
-                SDL.Pressed -> A.cmap $ \Player -> MovingRight
-                SDL.Released -> A.cmap $ \Player -> A.Not @MovingRight
-            SDL.KeycodeUp -> case SDL.keyboardEventKeyMotion keyboardEvent of
-                SDL.Pressed -> A.cmap $ \Player -> MovingUp
-                SDL.Released -> A.cmap $ \Player -> A.Not @MovingUp
-            SDL.KeycodeDown -> case SDL.keyboardEventKeyMotion keyboardEvent of
-                SDL.Pressed -> A.cmap $ \Player -> MovingDown
-                SDL.Released -> A.cmap $ \Player -> A.Not @MovingDown
+            SDL.KeycodeLeft -> moveLeft keyboardEvent
+            SDL.KeycodeRight -> moveRight keyboardEvent
+            SDL.KeycodeUp -> moveUp keyboardEvent
+            SDL.KeycodeDown -> moveDown keyboardEvent
+            SDL.KeycodeH -> moveLeft keyboardEvent
+            SDL.KeycodeL -> moveRight keyboardEvent
+            SDL.KeycodeK -> moveUp keyboardEvent
+            SDL.KeycodeJ -> moveDown keyboardEvent
+            SDL.KeycodeY -> moveUp keyboardEvent >> moveLeft keyboardEvent
+            SDL.KeycodeU -> moveUp keyboardEvent >> moveRight keyboardEvent
+            SDL.KeycodeB -> moveDown keyboardEvent >> moveLeft keyboardEvent
+            SDL.KeycodeN -> moveDown keyboardEvent >> moveRight keyboardEvent
             SDL.KeycodeEscape -> case SDL.keyboardEventKeyMotion keyboardEvent of
                 SDL.Pressed -> liftIO exitSuccess
                 _ -> return ()
             _ -> return ()
+    SDL.WindowClosedEvent _ -> liftIO exitSuccess
     _ -> return ()
+  where
+    moveLeft keyboardEvent =
+        case SDL.keyboardEventKeyMotion keyboardEvent of
+            SDL.Pressed -> A.cmap $ \Player -> MovingLeft
+            SDL.Released -> A.cmap $ \Player -> A.Not @MovingLeft
+    moveRight keyboardEvent =
+        case SDL.keyboardEventKeyMotion keyboardEvent of
+            SDL.Pressed -> A.cmap $ \Player -> MovingRight
+            SDL.Released -> A.cmap $ \Player -> A.Not @MovingRight
+    moveUp keyboardEvent =
+        case SDL.keyboardEventKeyMotion keyboardEvent of
+            SDL.Pressed -> A.cmap $ \Player -> MovingUp
+            SDL.Released -> A.cmap $ \Player -> A.Not @MovingUp
+    moveDown keyboardEvent =
+        case SDL.keyboardEventKeyMotion keyboardEvent of
+            SDL.Pressed -> A.cmap $ \Player -> MovingDown
+            SDL.Released -> A.cmap $ \Player -> A.Not @MovingDown
 
 stepPlayerMovement :: System' ()
 stepPlayerMovement = do
