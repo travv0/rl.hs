@@ -19,6 +19,16 @@ import SDL (($=), (^*), (^/))
 import qualified SDL
 import System.Exit (exitSuccess)
 
+data GameState = Animating | Playing | Waiting
+    deriving (Eq)
+
+-- | global game state (playing, paused, etc.)
+newtype GState = GState GameState
+
+instance Semigroup GState where (<>) = const id
+instance Monoid GState where mempty = undefined
+instance Component GState where type Storage GState = A.Global GState
+
 -- | global SDL renderer
 newtype GRenderer = GRenderer SDL.Renderer
 
@@ -56,15 +66,13 @@ data Player = Player deriving (Show)
 
 instance A.Component Player where type Storage Player = A.Unique Player
 
-{- | current position, stores both actual position on the grid and
-rendered position for smoothly transitioning from one grid position to another
--}
-data Position
-    = Position
-        (SDL.V2 Int)
-        -- ^ actual position
-        (SDL.V2 Double)
-        -- ^ display position
+-- | marks an enemy entity
+data Enemy = Enemy deriving (Show)
+
+instance A.Component Enemy where type Storage Enemy = A.Unique Enemy
+
+-- | entity position
+newtype Position = Position (SDL.V2 Int)
     deriving (Show)
 
 instance A.Component Position where type Storage Position = A.Map Position
@@ -84,7 +92,12 @@ data MovingLeft = MovingLeft deriving (Show)
 instance Component MovingLeft where type Storage MovingLeft = A.Unique MovingLeft
 
 -- | for visible entities
-newtype Visible = Visible SpriteType
+data Visible
+    = Visible
+        SpriteType
+        -- ^ sprite used to display entity
+        (SDL.V2 Double)
+        -- ^ pixel position to draw entity at
 
 instance Component Visible where type Storage Visible = A.Map Visible
 
@@ -100,13 +113,19 @@ data Solid = Solid
 
 instance Component Solid where type Storage Solid = A.Unique Solid
 
+newtype Cooldown = Cooldown Int deriving (Show)
+
+instance Component Cooldown where type Storage Cooldown = A.Map Cooldown
+
 A.makeWorld
     "World"
-    [ ''GRenderer
+    [ ''GState
+    , ''GRenderer
     , ''GWindow
     , ''GSpriteBank
     , ''GMoveTime
     , ''Player
+    , ''Enemy
     , ''Position
     , ''Velocity
     , ''MovingUp
@@ -116,26 +135,37 @@ A.makeWorld
     , ''Visible
     , ''Solid
     , ''Size
+    , ''Cooldown
     ]
 
 type System' a = A.System World a
-
-position :: SDL.V2 Int -> Position
-position pos = Position pos $ fromIntegral <$> pos
 
 makePlayer :: System' A.Entity
 makePlayer =
     A.newEntity
         ( Player
-        , position 5
+        , Position 5
         , Velocity 0
-        , Visible SpritePlayer
+        , Visible SpritePlayer 0
         , Solid
         , Size 1
+        , Cooldown 0
+        )
+
+makeEnemy :: System' A.Entity
+makeEnemy =
+    A.newEntity
+        ( Enemy
+        , Position $ SDL.V2 9 7
+        , Velocity 0
+        , Visible SpritePlayer 0
+        , Solid
+        , Size 1
+        , Cooldown 0
         )
 
 makeWall :: System' A.Entity
-makeWall = A.newEntity (position 7, Visible SpritePlayer, Solid, Size 1)
+makeWall = A.newEntity (Position 7, Visible SpritePlayer 0, Solid, Size 1)
 
 initialize :: System' ()
 initialize = do
@@ -148,13 +178,15 @@ initialize = do
     renderer <- SDL.createRenderer window (-1) SDL.defaultRenderer
     _windowEty <- A.newEntity (GWindow window)
     _rendererEty <- A.newEntity (GRenderer renderer)
-    _moveTimeEty <- A.newEntity (GMoveTime 0)
+    _moveTimeEty <- A.newEntity (GMoveTime turnTime)
+    _gameStateEty <- A.newEntity (GState Animating)
 
     playerSprite <- SDL.loadBMP "media/megumin.bmp"
     playerTexture <- SDL.createTextureFromSurface renderer playerSprite
     _spriteBankEty <- A.newEntity (GSpriteBank $ Map.fromList [(SpritePlayer, playerTexture)])
 
     _player <- makePlayer
+    _enemy <- makeEnemy
     _wall <- makeWall
 
     return ()
@@ -163,32 +195,56 @@ initialize = do
 turnTime :: Double
 turnTime = 0.2
 
-stepPosition :: Double -> System' ()
-stepPosition dT = A.cmapM $ \(Position p dp, Velocity v) -> do
-    (GMoveTime moveTime) <- A.get A.global
-    if
-            | moveTime <= 0 && v /= 0 -> do
-                solidAtNewPos <-
-                    A.cfold
-                        (\b (Position op _, Solid) -> b || p + v == op)
-                        False
-                if solidAtNewPos
-                    then return $ Position p (fromIntegral <$> p)
-                    else do
-                        A.global A.$= GMoveTime turnTime
-                        return $ Position (p + v) (fromIntegral <$> p)
-            | moveTime > 0 -> do
-                A.global A.$= GMoveTime (moveTime - dT)
-                return $ Position p (dp + (fromIntegral <$> v) ^/ turnTime ^* dT)
-            | otherwise -> return $ Position p (fromIntegral <$> p)
+stepMovement :: System' ()
+stepMovement = A.cmapM $ \(Position p, Velocity v, Cooldown c) -> do
+    if c == 0
+        then do
+            solidAtNewPos <-
+                A.cfold
+                    (\b (Position op, Solid) -> b || p + v == op)
+                    False
+            return (Position $ if solidAtNewPos then p else p + v, Cooldown c)
+        else do
+            return (Position p, Cooldown 5)
+
+stepMovementAnimate :: Double -> Double -> System' ()
+stepMovementAnimate moveTime dT = do
+    liftIO $ print moveTime
+    A.cmap $ \(Visible s vp, Position p) -> do
+        if moveTime > 0
+            then Visible s (vp + (fmap fromIntegral p - vp) ^/ moveTime ^* dT)
+            else Visible s (fromInteger . round <$> vp)
+
+stepUpdateState :: GameState -> Double -> System' ()
+stepUpdateState state moveTime = A.cmapM_ $ \(Player, Cooldown cooldown) -> do
+    when (state == Waiting && cooldown > 0) $ A.global A.$= GState Playing
+    when (cooldown == 0 && state == Playing) $ do
+        A.global A.$= GMoveTime turnTime
+        A.global A.$= GState Animating
+    when (moveTime <= 0 && state == Animating) $
+        A.global A.$= GState Waiting
+
+stepCooldowns :: System' ()
+stepCooldowns = A.cmap $ \(Cooldown c) ->
+    if c > 0
+        then Cooldown (c - 1)
+        else Cooldown c
 
 step :: Double -> System' ()
 step dT = do
     (GMoveTime moveTime) <- A.get A.global
-    when (moveTime <= 0) $ do
-        stepPlayerMovement
-    stepPosition dT
+    (GState state) <- A.get A.global
+    case state of
+        Waiting -> stepPlayerMovement
+        Playing -> do
+            stepEnemyMovement
+            stepMovement
+            stepCooldowns
+        Animating -> do
+            stepMovementAnimate moveTime dT
+            A.global A.$= GMoveTime (moveTime - dT)
     render
+    stepUpdateState state moveTime
 
 handleEvent :: SDL.Event -> System' ()
 handleEvent event = case SDL.eventPayload event of
@@ -228,19 +284,21 @@ handleEvent event = case SDL.eventPayload event of
 
 stepPlayerMovement :: System' ()
 stepPlayerMovement = do
-    A.cmap $ \(Player, Velocity (SDL.V2 _ _)) -> Velocity 0
-
+    A.cmap $ \(Player, Velocity _) -> Velocity 0
     A.cmap $ \(Player, MovingLeft, Velocity (SDL.V2 x y)) ->
         Velocity (SDL.V2 (x - 1) y)
-
     A.cmap $ \(Player, MovingRight, Velocity (SDL.V2 x y)) ->
         Velocity (SDL.V2 (x + 1) y)
-
     A.cmap $ \(Player, MovingUp, Velocity (SDL.V2 x y)) ->
         Velocity (SDL.V2 x (y - 1))
-
     A.cmap $ \(Player, MovingDown, Velocity (SDL.V2 x y)) ->
         Velocity (SDL.V2 x (y + 1))
+
+stepEnemyMovement :: System' ()
+stepEnemyMovement = do
+    A.cmap $ \(Enemy, Velocity _) -> Velocity 0
+    A.cmap $ \(Enemy, Velocity (SDL.V2 _ y)) ->
+        Velocity (SDL.V2 (-1) y)
 
 -- how big each cell on the grid is in pixels
 cellSize :: SDL.V2 Int
@@ -251,7 +309,7 @@ render = do
     (GRenderer renderer) <- A.get A.global
     SDL.clear renderer
     SDL.rendererDrawColor renderer $= SDL.V4 0 0 0 255
-    A.cmapM_ $ \(Size size, Position _ displayPosition, Visible sprite) -> do
+    A.cmapM_ $ \(Size size, Visible sprite displayPosition) -> do
         (GSpriteBank spriteBank) <- A.get A.global
         let texture = spriteBank Map.! sprite
         SDL.copyEx
