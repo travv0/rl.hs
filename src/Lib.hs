@@ -77,7 +77,7 @@ A.makeWorld
 type System' a = A.System World a
 
 playerSpeed :: Double
-playerSpeed = 400
+playerSpeed = 100
 
 makePlayer :: System' A.Entity
 makePlayer =
@@ -115,7 +115,6 @@ stepPosition dT = A.cmap $ \(Position p, Velocity v) -> Position (p + dT *^ v)
 
 step :: Double -> System' ()
 step dT = do
-    liftIO $ print dT
     stepPlayerMovement
     stepPosition dT
     render

@@ -18,8 +18,7 @@ appLoop :: Double -> Double -> System' ()
 appLoop previousTime totalTime = do
     events <- SDL.pollEvents
     mapM_ handleEvent events
-    now <- SDL.time
-    let dT = (totalTime - previousTime) * 1000000 / now
+    let dT = totalTime - previousTime
     step dT
     newTotalTime <- SDL.time
     appLoop totalTime newTotalTime
