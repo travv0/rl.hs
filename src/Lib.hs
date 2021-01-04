@@ -74,8 +74,16 @@ data Player = Player deriving (Show)
 
 instance A.Component Player where type Storage Player = A.Unique Player
 
+-- | enemy's current state
+data EnemyState
+    = -- | won't move at all
+      Sleeping
+    | -- | following player
+      Tracking
+    deriving (Show)
+
 -- | marks an enemy entity
-data Enemy = Enemy deriving (Show)
+newtype Enemy = Enemy EnemyState deriving (Show)
 
 instance A.Component Enemy where type Storage Enemy = A.Map Enemy
 
@@ -164,7 +172,7 @@ makePlayer pos =
 makeEnemy :: SDL.V2 Int -> System' A.Entity
 makeEnemy pos =
     A.newEntity
-        ( Enemy
+        ( Enemy Sleeping
         , Position pos
         , Velocity 0
         , Visible SpritePlayer $ fromIntegral <$> pos
@@ -255,6 +263,7 @@ step dT = do
     case state of
         Waiting -> stepPlayerMovement
         Playing -> do
+            stepEnemyState
             stepEnemyMovement
             stepMovement
             stepCooldowns
@@ -314,9 +323,23 @@ stepPlayerMovement = do
 
 stepEnemyMovement :: System' ()
 stepEnemyMovement = do
-    A.cmap $ \(Enemy, Velocity _) -> Velocity 0
-    A.cmap $ \(Enemy, Velocity (SDL.V2 _ y)) ->
-        Velocity (SDL.V2 (-1) y)
+    A.cmap $ \(Enemy enemyState, Velocity (SDL.V2 _ y)) ->
+        case enemyState of
+            Sleeping -> Velocity 0
+            Tracking -> Velocity (SDL.V2 (-1) y)
+
+stepEnemyState :: System' ()
+stepEnemyState = A.cmapM_ $ \(Enemy _, Position enemyPos, ety :: A.Entity) ->
+    A.cmapM_ $ \(Player, Position playerPos) ->
+        when (distance enemyPos playerPos <= (2 :: Double)) $
+            ety A.$= Enemy Tracking
+
+distance :: (Floating a, Real b) => SDL.V2 b -> SDL.V2 b -> a
+distance (SDL.V2 fromX fromY) (SDL.V2 toX toY) =
+    sqrt
+        ( (realToFrac (fromX - toX) ^ (2 :: Integer))
+            + (realToFrac (fromY - toY) ^ (2 :: Integer))
+        )
 
 -- how big each cell on the grid is in pixels
 cellSize :: SDL.V2 Int
