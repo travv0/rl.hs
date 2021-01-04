@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: f83a7c767b2abc2897f72afa71b5d387bed41aa69a603c2e41ccdb4e71ea56ba
+-- hash: a57cfe44d99d6e1a679cceee657483ef33d27decbf1a1e7327c461a06c844f17
 
 name:           rl
 version:        0.1.0.0
@@ -38,6 +38,7 @@ library
     , base >=4.7 && <5
     , containers
     , mtl
+    , random
     , sdl2
   default-language: Haskell2010
 
@@ -53,6 +54,7 @@ executable rl-exe
     , base >=4.7 && <5
     , containers
     , mtl
+    , random
     , rl
     , sdl2
   default-language: Haskell2010
@@ -70,6 +72,7 @@ test-suite rl-test
     , base >=4.7 && <5
     , containers
     , mtl
+    , random
     , rl
     , sdl2
   default-language: Haskell2010

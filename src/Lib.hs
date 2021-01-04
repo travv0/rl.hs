@@ -20,6 +20,7 @@ import Data.Semigroup (Sum (Sum, getSum))
 import SDL (($=), (^*), (^/))
 import qualified SDL
 import System.Exit (exitSuccess)
+import System.Random (Random (randomIO))
 
 -- | the current state or phase of the game
 data GameState
@@ -137,6 +138,16 @@ newtype Cooldown = Cooldown Int deriving (Show)
 
 instance Component Cooldown where type Storage Cooldown = A.Map Cooldown
 
+data Action
+    = MoveTo (SDL.V2 Int)
+    | Attack
+    deriving (Show)
+
+-- | actions to be animated
+newtype Actions = Actions [Action] deriving (Show)
+
+instance Component Actions where type Storage Actions = A.Map Actions
+
 A.makeWorld
     "World"
     [ ''GState
@@ -156,6 +167,7 @@ A.makeWorld
     , ''Solid
     , ''Size
     , ''Cooldown
+    , ''Actions
     ]
 
 type System' a = A.System World a
@@ -170,6 +182,7 @@ makePlayer pos =
         , Solid
         , Size 1
         , Cooldown 0
+        , Actions []
         )
 
 makeEnemy :: SDL.V2 Int -> System' A.Entity
@@ -182,6 +195,7 @@ makeEnemy pos =
         , Solid
         , Size 1
         , Cooldown 0
+        , Actions []
         )
 
 makeWall :: SDL.V2 Int -> System' A.Entity
@@ -223,25 +237,34 @@ turnTime :: Double
 turnTime = 0.2
 
 stepMovement :: System' ()
-stepMovement = A.cmapM_ $ \(Position p, Velocity v, Cooldown c, ety) -> do
-    if c == 0
-        then do
-            solidAtNewPos <-
-                A.cfold
-                    (\b (Position op, Solid) -> b || p + v == op)
-                    False
-            A.cmapM_ $ \(Player, etyP) -> do
-                ety
-                    A.$= ( Position $ if solidAtNewPos then p else p + v
-                         , Cooldown $ if etyP == ety then 2 else 1
-                         )
-        else ety A.$= (Position p, Cooldown c)
+stepMovement = A.cmapM_ $ \(Position p, Velocity v, Cooldown c, Actions as, ety) -> do
+    when (c == 0) $ do
+        solidAtNewPos <-
+            A.cfold
+                (\b (Position op, Solid) -> b || p + v == op)
+                False
+        A.cmapM_ $ \(Player, etyP) -> do
+            let newPos = if solidAtNewPos then p else p + v
+            ety
+                A.$= ( Position newPos
+                     , Cooldown $ if etyP == ety then 2 else 1
+                     , Actions $ if newPos /= p then as ++ [MoveTo newPos] else as
+                     )
 
-stepMovementAnimate :: Double -> Double -> System' ()
-stepMovementAnimate moveTime dT = A.cmap $ \(Visible s vp, Position p) -> do
-    if moveTime > 0
-        then Visible s (vp + (fmap fromIntegral p - vp) ^/ moveTime ^* dT)
-        else Visible s (fromInteger . round <$> vp)
+stepAnimateActions :: Double -> Double -> System' ()
+stepAnimateActions moveTime dT = A.cmap $ \(Visible s vp, Actions actions) -> do
+    case actions of
+        (MoveTo p : restActions) ->
+            let actionTurnTime = turnTime / fromIntegral (length actions)
+                actionMoveTime = actionTurnTime - (turnTime - moveTime)
+             in if actionMoveTime > 0
+                    then
+                        ( Visible s (vp + (fmap fromIntegral p - vp) ^/ moveTime ^* dT)
+                        , Actions actions
+                        )
+                    else (Visible s (fromInteger . round <$> vp), Actions restActions)
+        (Attack : restActions) -> (Visible s (fromInteger . round <$> vp), Actions restActions)
+        [] -> (Visible s (fromInteger . round <$> vp), Actions [])
 
 stepUpdateState :: GameState -> Double -> System' ()
 stepUpdateState state moveTime = A.cmapM_ $ \(Player, Cooldown cooldown, Velocity v) ->
@@ -273,7 +296,7 @@ step dT = do
             stepMovement
             stepCooldowns
         Animating -> do
-            stepMovementAnimate moveTime dT
+            stepAnimateActions moveTime dT
             stepUpdateMoveTime moveTime dT
     render
     stepUpdateState state moveTime
@@ -328,10 +351,12 @@ stepPlayerMovement = do
 
 stepEnemyMovement :: System' ()
 stepEnemyMovement = do
-    A.cmap $ \(Enemy enemyState, Velocity (SDL.V2 _ y)) ->
+    i <- liftIO (randomIO :: IO Int)
+    j <- liftIO (randomIO :: IO Int)
+    A.cmap $ \(Enemy enemyState, Velocity (SDL.V2 _ _)) ->
         case enemyState of
             Sleeping -> Velocity 0
-            Tracking -> Velocity (SDL.V2 (-1) y)
+            Tracking -> Velocity (SDL.V2 (i `mod` 3 - 1) (j `mod` 3 - 1))
 
 stepEnemyState :: System' ()
 stepEnemyState = A.cmapM_ $ \(Enemy _, Position enemyPos, ety) ->

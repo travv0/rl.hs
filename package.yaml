@@ -24,6 +24,7 @@ dependencies:
 - apecs
 - containers
 - mtl
+- random
 - sdl2
 
 library:
