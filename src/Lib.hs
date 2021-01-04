@@ -3,6 +3,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -19,14 +20,21 @@ import SDL (($=), (^*), (^/))
 import qualified SDL
 import System.Exit (exitSuccess)
 
-data GameState = Animating | Playing | Waiting
+-- | the current state or phase of the game
+data GameState
+    = -- | animating position changes, etc
+      Animating
+    | -- | running game logic until player's next turn
+      Playing
+    | -- | waiting on player's action
+      Waiting
     deriving (Eq)
 
 -- | global game state (playing, paused, etc.)
 newtype GState = GState GameState
 
 instance Semigroup GState where (<>) = const id
-instance Monoid GState where mempty = undefined
+instance Monoid GState where mempty = GState Waiting
 instance Component GState where type Storage GState = A.Global GState
 
 -- | global SDL renderer
@@ -69,7 +77,7 @@ instance A.Component Player where type Storage Player = A.Unique Player
 -- | marks an enemy entity
 data Enemy = Enemy deriving (Show)
 
-instance A.Component Enemy where type Storage Enemy = A.Unique Enemy
+instance A.Component Enemy where type Storage Enemy = A.Map Enemy
 
 -- | entity position
 newtype Position = Position (SDL.V2 Int)
@@ -111,8 +119,9 @@ instance Component Size where type Storage Size = A.Map Size
 -- | for entities that can't be passed through by other solid entities
 data Solid = Solid
 
-instance Component Solid where type Storage Solid = A.Unique Solid
+instance Component Solid where type Storage Solid = A.Map Solid
 
+-- | ticks until entity can perform another action
 newtype Cooldown = Cooldown Int deriving (Show)
 
 instance Component Cooldown where type Storage Cooldown = A.Map Cooldown
@@ -140,32 +149,38 @@ A.makeWorld
 
 type System' a = A.System World a
 
-makePlayer :: System' A.Entity
-makePlayer =
+makePlayer :: SDL.V2 Int -> System' A.Entity
+makePlayer pos =
     A.newEntity
         ( Player
-        , Position 5
+        , Position pos
         , Velocity 0
-        , Visible SpritePlayer 0
+        , Visible SpritePlayer $ fromIntegral <$> pos
         , Solid
         , Size 1
         , Cooldown 0
         )
 
-makeEnemy :: System' A.Entity
-makeEnemy =
+makeEnemy :: SDL.V2 Int -> System' A.Entity
+makeEnemy pos =
     A.newEntity
         ( Enemy
-        , Position $ SDL.V2 9 7
+        , Position pos
         , Velocity 0
-        , Visible SpritePlayer 0
+        , Visible SpritePlayer $ fromIntegral <$> pos
         , Solid
         , Size 1
         , Cooldown 0
         )
 
-makeWall :: System' A.Entity
-makeWall = A.newEntity (Position 7, Visible SpritePlayer 0, Solid, Size 1)
+makeWall :: SDL.V2 Int -> System' A.Entity
+makeWall pos =
+    A.newEntity
+        ( Position pos
+        , Visible SpritePlayer $ fromIntegral <$> pos
+        , Solid
+        , Size 1
+        )
 
 initialize :: System' ()
 initialize = do
@@ -179,15 +194,17 @@ initialize = do
     _windowEty <- A.newEntity (GWindow window)
     _rendererEty <- A.newEntity (GRenderer renderer)
     _moveTimeEty <- A.newEntity (GMoveTime turnTime)
-    _gameStateEty <- A.newEntity (GState Animating)
 
     playerSprite <- SDL.loadBMP "media/megumin.bmp"
     playerTexture <- SDL.createTextureFromSurface renderer playerSprite
     _spriteBankEty <- A.newEntity (GSpriteBank $ Map.fromList [(SpritePlayer, playerTexture)])
 
-    _player <- makePlayer
-    _enemy <- makeEnemy
-    _wall <- makeWall
+    player <- makePlayer 5
+    liftIO $ putStrLn $ "player: " <> show player
+    enemy <- makeEnemy 7
+    liftIO $ putStrLn $ "enemy: " <> show enemy
+    wall <- makeWall $ SDL.V2 3 7
+    liftIO $ putStrLn $ "wall: " <> show wall
 
     return ()
 
@@ -208,27 +225,28 @@ stepMovement = A.cmapM $ \(Position p, Velocity v, Cooldown c) -> do
             return (Position p, Cooldown 5)
 
 stepMovementAnimate :: Double -> Double -> System' ()
-stepMovementAnimate moveTime dT = do
-    liftIO $ print moveTime
-    A.cmap $ \(Visible s vp, Position p) -> do
-        if moveTime > 0
-            then Visible s (vp + (fmap fromIntegral p - vp) ^/ moveTime ^* dT)
-            else Visible s (fromInteger . round <$> vp)
+stepMovementAnimate moveTime dT = A.cmap $ \(Visible s vp, Position p) -> do
+    if moveTime > 0
+        then Visible s (vp + (fmap fromIntegral p - vp) ^/ moveTime ^* dT)
+        else Visible s (fromInteger . round <$> vp)
 
 stepUpdateState :: GameState -> Double -> System' ()
-stepUpdateState state moveTime = A.cmapM_ $ \(Player, Cooldown cooldown) -> do
-    when (state == Waiting && cooldown > 0) $ A.global A.$= GState Playing
-    when (cooldown == 0 && state == Playing) $ do
-        A.global A.$= GMoveTime turnTime
-        A.global A.$= GState Animating
-    when (moveTime <= 0 && state == Animating) $
-        A.global A.$= GState Waiting
+stepUpdateState state moveTime = A.cmapM_ $ \(Player, Cooldown cooldown, Velocity v) ->
+    case state of
+        Waiting -> when (v /= 0) $ A.global A.$= GState Playing
+        Playing -> when (cooldown == 0) $ do
+            A.global A.$= GMoveTime turnTime
+            A.global A.$= GState Animating
+        Animating -> when (moveTime <= 0) $ A.global A.$= GState Waiting
 
 stepCooldowns :: System' ()
 stepCooldowns = A.cmap $ \(Cooldown c) ->
     if c > 0
         then Cooldown (c - 1)
         else Cooldown c
+
+stepUpdateMoveTime :: Double -> Double -> System' ()
+stepUpdateMoveTime moveTime dT = A.global A.$= GMoveTime (moveTime - dT)
 
 step :: Double -> System' ()
 step dT = do
@@ -242,7 +260,7 @@ step dT = do
             stepCooldowns
         Animating -> do
             stepMovementAnimate moveTime dT
-            A.global A.$= GMoveTime (moveTime - dT)
+            stepUpdateMoveTime moveTime dT
     render
     stepUpdateState state moveTime
 
