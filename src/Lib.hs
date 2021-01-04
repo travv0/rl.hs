@@ -16,6 +16,7 @@ import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Semigroup (Sum (Sum, getSum))
 import SDL (($=), (^*), (^/))
 import qualified SDL
 import System.Exit (exitSuccess)
@@ -58,15 +59,17 @@ data SpriteType = SpritePlayer
 -- | global sprite bank for accessing sprite textures
 newtype GSpriteBank = GSpriteBank (Map SpriteType SDL.Texture)
 
-instance Semigroup GSpriteBank where (<>) = (<>)
-instance Monoid GSpriteBank where mempty = mempty
+instance Semigroup GSpriteBank where
+    GSpriteBank sb1 <> GSpriteBank sb2 = GSpriteBank $ sb1 <> sb2
+instance Monoid GSpriteBank where mempty = GSpriteBank mempty
 instance Component GSpriteBank where type Storage GSpriteBank = A.Global GSpriteBank
 
 -- | countdown until move animations are done and player has control again
 newtype GMoveTime = GMoveTime Double
 
-instance Semigroup GMoveTime where (<>) = (<>)
-instance Monoid GMoveTime where mempty = mempty
+instance Semigroup GMoveTime where
+    GMoveTime mt1 <> GMoveTime mt2 = GMoveTime $ getSum $ Sum mt1 <> Sum mt2
+instance Monoid GMoveTime where mempty = GMoveTime $ getSum (mempty :: Sum Double)
 instance Component GMoveTime where type Storage GMoveTime = A.Global GMoveTime
 
 -- | marks the player entity
@@ -201,7 +204,6 @@ initialize = do
     renderer <- SDL.createRenderer window (-1) SDL.defaultRenderer
     _windowEty <- A.newEntity (GWindow window)
     _rendererEty <- A.newEntity (GRenderer renderer)
-    _moveTimeEty <- A.newEntity (GMoveTime turnTime)
 
     playerSprite <- SDL.loadBMP "media/megumin.bmp"
     playerTexture <- SDL.createTextureFromSurface renderer playerSprite
