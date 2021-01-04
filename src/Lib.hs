@@ -221,16 +221,19 @@ turnTime :: Double
 turnTime = 0.2
 
 stepMovement :: System' ()
-stepMovement = A.cmapM $ \(Position p, Velocity v, Cooldown c) -> do
+stepMovement = A.cmapM_ $ \(Position p, Velocity v, Cooldown c, ety) -> do
     if c == 0
         then do
             solidAtNewPos <-
                 A.cfold
                     (\b (Position op, Solid) -> b || p + v == op)
                     False
-            return (Position $ if solidAtNewPos then p else p + v, Cooldown c)
-        else do
-            return (Position p, Cooldown 5)
+            A.cmapM_ $ \(Player, etyP) -> do
+                ety
+                    A.$= ( Position $ if solidAtNewPos then p else p + v
+                         , Cooldown $ if etyP == ety then 2 else 1
+                         )
+        else ety A.$= (Position p, Cooldown c)
 
 stepMovementAnimate :: Double -> Double -> System' ()
 stepMovementAnimate moveTime dT = A.cmap $ \(Visible s vp, Position p) -> do
@@ -329,7 +332,7 @@ stepEnemyMovement = do
             Tracking -> Velocity (SDL.V2 (-1) y)
 
 stepEnemyState :: System' ()
-stepEnemyState = A.cmapM_ $ \(Enemy _, Position enemyPos, ety :: A.Entity) ->
+stepEnemyState = A.cmapM_ $ \(Enemy _, Position enemyPos, ety) ->
     A.cmapM_ $ \(Player, Position playerPos) ->
         when (distance enemyPos playerPos <= (2 :: Double)) $
             ety A.$= Enemy Tracking
