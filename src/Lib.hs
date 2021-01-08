@@ -138,9 +138,24 @@ newtype Cooldown = Cooldown Int deriving (Show)
 
 instance Component Cooldown where type Storage Cooldown = A.Map Cooldown
 
+-- | entity's health
+newtype Health = Health Int deriving (Show)
+
+instance Component Health where type Storage Health = A.Map Health
+
+-- | entity's damage
+newtype Damage = Damage Int deriving (Show)
+
+instance Component Damage where type Storage Damage = A.Map Damage
+
+-- | entity is wielding another entity
+newtype Wielding = Wielding A.Entity deriving (Show)
+
+instance Component Wielding where type Storage Wielding = A.Map Wielding
+
 data Action
     = MoveTo (SDL.V2 Int)
-    | Attack
+    | Attack (SDL.V2 Int)
     deriving (Show)
 
 -- | actions to be animated
@@ -167,35 +182,45 @@ A.makeWorld
     , ''Solid
     , ''Size
     , ''Cooldown
+    , ''Health
+    , ''Damage
     , ''Actions
+    , ''Wielding
     ]
 
 type System' a = A.System World a
 
 makePlayer :: SDL.V2 Int -> System' A.Entity
-makePlayer pos =
+makePlayer pos = do
+    weapon <- A.newEntity (Damage 10)
     A.newEntity
-        ( Player
-        , Position pos
-        , Velocity 0
-        , Visible SpritePlayer $ fromIntegral <$> pos
-        , Solid
-        , Size 1
-        , Cooldown 0
-        , Actions []
+        (
+            ( Player
+            , Position pos
+            , Velocity 0
+            , Visible SpritePlayer $ fromIntegral <$> pos
+            , Solid
+            , Size 1
+            , Cooldown 0
+            , Actions []
+            )
+        , Wielding weapon
         )
 
 makeEnemy :: SDL.V2 Int -> System' A.Entity
 makeEnemy pos =
     A.newEntity
-        ( Enemy Sleeping
-        , Position pos
-        , Velocity 0
-        , Visible SpritePlayer $ fromIntegral <$> pos
-        , Solid
-        , Size 1
-        , Cooldown 0
-        , Actions []
+        (
+            ( Enemy Sleeping
+            , Position pos
+            , Velocity 0
+            , Visible SpritePlayer $ fromIntegral <$> pos
+            , Solid
+            , Size 1
+            , Cooldown 0
+            , Actions []
+            )
+        , Health 100
         )
 
 makeWall :: SDL.V2 Int -> System' A.Entity
@@ -243,28 +268,49 @@ stepMovement = A.cmapM_ $ \(Position p, Velocity v, Cooldown c, Actions as, ety)
             A.cfold
                 (\b (Position op, Solid) -> b || p + v == op)
                 False
-        A.cmapM_ $ \(Player, etyP) -> do
+        A.cmapM_ $ \Player -> do
             let newPos = if solidAtNewPos then p else p + v
             ety
                 A.$= ( Position newPos
-                     , Cooldown $ if etyP == ety then 2 else 1
+                     , Cooldown 1
                      , Actions $ if newPos /= p then as ++ [MoveTo newPos] else as
                      )
 
+stepAttack :: System' ()
+stepAttack = A.cmapM_ $ \(Position p, Velocity v, Cooldown c, Actions as, Wielding weapon, etyA) -> do
+    (Damage damage) <- A.get weapon
+    when (c == 0) $ do
+        A.cmapM_
+            ( \(Position op, Health h, etyD) ->
+                when (p + v == op) $ do
+                    etyD A.$= Health (h - damage)
+                    etyA A.$= Actions (as ++ [Attack op])
+            )
+
 stepAnimateActions :: Double -> Double -> System' ()
-stepAnimateActions moveTime dT = A.cmap $ \(Visible s vp, Actions actions) -> do
-    case actions of
-        (MoveTo p : restActions) ->
-            let actionTurnTime = turnTime / fromIntegral (length actions)
-                actionMoveTime = actionTurnTime - (turnTime - moveTime)
-             in if actionMoveTime > 0
-                    then
-                        ( Visible s (vp + (fmap fromIntegral p - vp) ^/ moveTime ^* dT)
-                        , Actions actions
+stepAnimateActions moveTime dT = A.cmap $ \(Visible s vp, Position pos, Actions actions) ->
+    let actionTurnTime = turnTime / fromIntegral (length actions)
+        actionMoveTime = actionTurnTime - (turnTime - moveTime)
+     in case actions of
+            (action : restActions) ->
+                if actionMoveTime > 0
+                    then case action of
+                        MoveTo p ->
+                            ( Visible s (vp + (fmap fromIntegral p - vp) ^/ moveTime ^* dT)
+                            , Actions actions
+                            )
+                        Attack p ->
+                            ( Visible s (vp + (fmap fromIntegral p - vp) ^/ moveTime ^* dT ^/ 2)
+                            , Actions actions
+                            )
+                    else
+                        ( Visible s $
+                            if null restActions
+                                then fromIntegral <$> pos
+                                else fromInteger . round <$> vp
+                        , Actions restActions
                         )
-                    else (Visible s (fromInteger . round <$> vp), Actions restActions)
-        (Attack : restActions) -> (Visible s (fromInteger . round <$> vp), Actions restActions)
-        [] -> (Visible s (fromInteger . round <$> vp), Actions [])
+            [] -> (Visible s (fromIntegral <$> pos), Actions [])
 
 stepUpdateState :: GameState -> Double -> System' ()
 stepUpdateState state moveTime = A.cmapM_ $ \(Player, Cooldown cooldown, Velocity v) ->
@@ -293,6 +339,7 @@ step dT = do
         Playing -> do
             stepEnemyState
             stepEnemyMovement
+            stepAttack
             stepMovement
             stepCooldowns
         Animating -> do
