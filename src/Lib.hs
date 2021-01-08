@@ -190,9 +190,30 @@ A.makeWorld
 
 type System' a = A.System World a
 
+type AllComponents =
+    ( ( Player
+      , Enemy
+      , Position
+      )
+    , ( Velocity
+      , MovingUp
+      , MovingRight
+      , MovingDown
+      , MovingLeft
+      , Visible
+      , Solid
+      , Size
+      )
+    , Cooldown
+    , Health
+    , Damage
+    , Actions
+    , Wielding
+    )
+
 makePlayer :: SDL.V2 Int -> System' A.Entity
 makePlayer pos = do
-    weapon <- A.newEntity (Damage 10)
+    weapon <- A.newEntity (Damage 30)
     A.newEntity
         (
             ( Player
@@ -287,6 +308,10 @@ stepAttack = A.cmapM_ $ \(Position p, Velocity v, Cooldown c, Actions as, Wieldi
                     etyA A.$= Actions (as ++ [Attack op])
             )
 
+stepHealth :: System' ()
+stepHealth = A.cmapM_ $ \(Health h, ety) ->
+    when (h <= 0) $ A.destroy ety $ A.Proxy @AllComponents
+
 stepAnimateActions :: Double -> Double -> System' ()
 stepAnimateActions moveTime dT = A.cmap $ \(Visible s vp, Position pos, Actions actions) ->
     let actionTurnTime = turnTime / fromIntegral (length actions)
@@ -340,6 +365,7 @@ step dT = do
             stepEnemyState
             stepEnemyMovement
             stepAttack
+            stepHealth
             stepMovement
             stepCooldowns
         Animating -> do
