@@ -14,11 +14,9 @@ import Apecs (Component (Storage), Has (..), SystemT (SystemT), asks, explInit)
 import qualified Apecs as A
 import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO (liftIO))
-import Data.Fixed (mod')
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Semigroup (Sum (Sum, getSum))
-import Debug.Trace
 import SDL (($=), (^*), (^/))
 import qualified SDL
 import System.Exit (exitSuccess)
@@ -236,7 +234,7 @@ initialize = do
 
 -- | how fast transition between positions should be, smaller number is faster
 turnTime :: Double
-turnTime = 0.5
+turnTime = 0.2
 
 stepMovement :: System' ()
 stepMovement = A.cmapM_ $ \(Position p, Velocity v, Cooldown c, Actions as, ety) -> do
@@ -249,54 +247,24 @@ stepMovement = A.cmapM_ $ \(Position p, Velocity v, Cooldown c, Actions as, ety)
             let newPos = if solidAtNewPos then p else p + v
             ety
                 A.$= ( Position newPos
-                     , Cooldown $ if etyP == ety then 3 else 1
+                     , Cooldown $ if etyP == ety then 2 else 1
                      , Actions $ if newPos /= p then as ++ [MoveTo newPos] else as
                      )
 
-infix 9 !!?
-(!!?) :: [a] -> Int -> Maybe a
-(!!?) xs i
-    | i < 0 = Nothing
-    | otherwise = go i xs
-  where
-    go :: Int -> [a] -> Maybe a
-    go 0 (x : _) = Just x
-    go j (_ : ys) = go (j - 1) ys
-    go _ [] = Nothing
-{-# INLINE (!!?) #-}
-
 stepAnimateActions :: Double -> Double -> System' ()
-stepAnimateActions moveTime dT = A.cmap $ \(Visible s vp, Actions actions, Position p, ety :: A.Entity) ->
-    if null actions
-        then (Visible s vp, Actions actions)
-        else
+stepAnimateActions moveTime dT = A.cmap $ \(Visible s vp, Actions actions) -> do
+    case actions of
+        (MoveTo p : restActions) ->
             let actionTurnTime = turnTime / fromIntegral (length actions)
-                -- moveTime 0.5, length actions 5, actionTurnTime 0.1, actionMoveTime 0.1
-                -- actionMoveTime = (moveTime - actionTurnTime * fromIntegral (length actions - 1))
-                index = floor ((turnTime - moveTime) / actionTurnTime)
-             in case trace (show index) actions !!? index of
-                    Just (MoveTo pos) ->
-                        trace
-                            ( show ety
-                                <> " "
-                                <> show turnTime
-                                <> " "
-                                <> show moveTime
-                                <> " "
-                                <> show actionTurnTime
-                                -- <> " "
-                                -- <> show actionMoveTime
-                                <> " "
-                                <> show actions
-                            )
-                            $ if moveTime > 0
-                                then
-                                    ( Visible s (vp + (fmap fromIntegral pos - vp) ^* (actionTurnTime / moveTime) ^* dT)
-                                    , Actions actions
-                                    )
-                                else (Visible s (fromInteger . round <$> vp), Actions actions)
-                    Just Attack -> (Visible s (fromInteger . round <$> vp), Actions actions)
-                    Nothing -> (Visible s (fromInteger . fromIntegral <$> p), Actions [])
+                actionMoveTime = actionTurnTime - (turnTime - moveTime)
+             in if actionMoveTime > 0
+                    then
+                        ( Visible s (vp + (fmap fromIntegral p - vp) ^/ moveTime ^* dT)
+                        , Actions actions
+                        )
+                    else (Visible s (fromInteger . round <$> vp), Actions restActions)
+        (Attack : restActions) -> (Visible s (fromInteger . round <$> vp), Actions restActions)
+        [] -> (Visible s (fromInteger . round <$> vp), Actions [])
 
 stepUpdateState :: GameState -> Double -> System' ()
 stepUpdateState state moveTime = A.cmapM_ $ \(Player, Cooldown cooldown, Velocity v) ->
