@@ -299,14 +299,16 @@ stepMovement = A.cmapM_ $ \(Position p, Velocity v, Cooldown c, Actions as, ety)
 
 stepAttack :: System' ()
 stepAttack = A.cmapM_ $ \(Position p, Velocity v, Cooldown c, Actions as, Wielding weapon, etyA) -> do
-    (Damage damage) <- A.get weapon
-    when (c == 0) $ do
-        A.cmapM_
-            ( \(Position op, Health h, etyD) ->
-                when (p + v == op) $ do
-                    etyD A.$= Health (h - damage)
-                    etyA A.$= Actions (as ++ [Attack op])
-            )
+    weaponDamages <- A.exists weapon $ A.Proxy @Damage
+    when weaponDamages $ do
+        (Damage damage) <- A.get weapon
+        when (c == 0) $ do
+            A.cmapM_
+                ( \(Position op, Health h, etyD) ->
+                    when (p + v == op) $ do
+                        etyD A.$= Health (h - damage)
+                        etyA A.$= Actions (as ++ [Attack op])
+                )
 
 stepHealth :: System' ()
 stepHealth = A.cmapM_ $ \(Health h, ety) ->
