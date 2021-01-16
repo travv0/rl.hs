@@ -12,15 +12,17 @@ module Lib where
 
 import Apecs (Component (Storage), Has (..), SystemT (SystemT), asks, explInit)
 import qualified Apecs as A
-import Control.Monad (when)
+import Control.Monad (filterM, when)
 import Control.Monad.IO.Class (MonadIO (liftIO))
+import Data.Graph.AStar (aStarM)
+import Data.HashSet (HashSet)
+import qualified Data.HashSet as HS
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Semigroup (Sum (Sum, getSum))
 import SDL (($=), (^*), (^/))
 import qualified SDL
 import System.Exit (exitSuccess)
-import System.Random (Random (randomIO))
 
 -- | the current state or phase of the game
 data GameState
@@ -426,12 +428,45 @@ stepPlayerMovement = do
 
 stepEnemyMovement :: System' ()
 stepEnemyMovement = do
-    i <- liftIO (randomIO :: IO Int)
-    j <- liftIO (randomIO :: IO Int)
-    A.cmap $ \(Enemy enemyState, Velocity (SDL.V2 _ _)) ->
+    A.cmapM $ \(Enemy enemyState, Velocity _, Position pos, ety) ->
         case enemyState of
-            Sleeping -> Velocity 0
-            Tracking -> Velocity (SDL.V2 (i `mod` 3 - 1) (j `mod` 3 - 1))
+            Sleeping -> ety A.$= Velocity 0
+            Tracking -> moveTowardsPlayer ety pos
+
+moveTowardsPlayer :: A.Entity -> SDL.V2 Int -> System' ()
+moveTowardsPlayer ety pos =
+    A.cmapM $ \(Player, Position playerPos) -> do
+        path <-
+            aStarM
+                (neighbors playerPos)
+                nodeDistance
+                (heuristic playerPos)
+                (return . (== playerPos))
+                (return pos)
+        case path of
+            Just (newPos : _) -> ety A.$= Velocity (newPos - pos)
+            _ -> ety A.$= Velocity 0
+
+neighbors :: SDL.V2 Int -> SDL.V2 Int -> System' (HashSet (SDL.V2 Int))
+neighbors goal pos = do
+    let options = [pos + SDL.V2 dx dy | dx <- [-1, 0, 1], dy <- [-1, 0, 1], dx /= 0 || dy /= 0]
+    clearPositions <-
+        filterM
+            ( \newPos -> do
+                solidAtNewPos <-
+                    A.cfold
+                        (\b (Position op, Solid) -> b || newPos == op)
+                        False
+                return $ newPos == goal || not solidAtNewPos
+            )
+            options
+    return $ HS.fromList clearPositions
+
+heuristic :: Monad m => SDL.V2 Int -> SDL.V2 Int -> m Double
+heuristic goal curr = return $ distance curr goal
+
+nodeDistance :: Monad m => SDL.V2 Int -> SDL.V2 Int -> m Double
+nodeDistance from to = return $ distance from to
 
 stepEnemyState :: System' ()
 stepEnemyState = A.cmapM_ $ \(Enemy _, Position enemyPos, ety) ->
