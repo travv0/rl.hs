@@ -145,10 +145,16 @@ newtype Health = Health Int deriving (Show)
 
 instance Component Health where type Storage Health = A.Map Health
 
--- | entity's damage
-newtype Damage = Damage Int deriving (Show)
+-- | weapon
+data Weapon
+    = Weapon
+        Int
+        -- ^ weapon's damage
+        Int
+        -- ^ weapon's cooldown
+    deriving (Show)
 
-instance Component Damage where type Storage Damage = A.Map Damage
+instance Component Weapon where type Storage Weapon = A.Map Weapon
 
 -- | entity is wielding another entity
 newtype Wielding = Wielding A.Entity deriving (Show)
@@ -185,7 +191,7 @@ A.makeWorld
     , ''Size
     , ''Cooldown
     , ''Health
-    , ''Damage
+    , ''Weapon
     , ''Actions
     , ''Wielding
     ]
@@ -208,14 +214,14 @@ type AllComponents =
       )
     , Cooldown
     , Health
-    , Damage
+    , Weapon
     , Actions
     , Wielding
     )
 
 makePlayer :: SDL.V2 Int -> System' A.Entity
 makePlayer pos = do
-    weapon <- A.newEntity (Damage 30)
+    weapon <- A.newEntity (Weapon 30 6)
     A.newEntity
         (
             ( Player
@@ -227,11 +233,13 @@ makePlayer pos = do
             , Cooldown 0
             , Actions []
             )
+        , Health 100
         , Wielding weapon
         )
 
 makeEnemy :: SDL.V2 Int -> System' A.Entity
-makeEnemy pos =
+makeEnemy pos = do
+    weapon <- A.newEntity (Weapon 20 5)
     A.newEntity
         (
             ( Enemy Sleeping
@@ -244,6 +252,7 @@ makeEnemy pos =
             , Actions []
             )
         , Health 100
+        , Wielding weapon
         )
 
 makeWall :: SDL.V2 Int -> System' A.Entity
@@ -295,22 +304,23 @@ stepMovement = A.cmapM_ $ \(Position p, Velocity v, Cooldown c, Actions as, ety)
             let newPos = if solidAtNewPos then p else p + v
             ety
                 A.$= ( Position newPos
-                     , Cooldown 1
+                     , Cooldown 5
                      , Actions $ if newPos /= p then as ++ [MoveTo newPos] else as
                      )
 
 stepAttack :: System' ()
 stepAttack = A.cmapM_ $ \(Position p, Velocity v, Cooldown c, Actions as, Wielding weapon, etyA) -> do
-    weaponDamages <- A.exists weapon $ A.Proxy @Damage
-    when weaponDamages $ do
-        (Damage damage) <- A.get weapon
-        when (c == 0) $ do
-            A.cmapM_
-                ( \(Position op, Health h, etyD) ->
-                    when (p + v == op) $ do
-                        etyD A.$= Health (h - damage)
-                        etyA A.$= Actions (as ++ [Attack op])
-                )
+    isWeapon <- A.exists weapon $ A.Proxy @Weapon
+    when (isWeapon && c == 0) $ do
+        (Weapon damage cooldown) <- A.get weapon
+        A.cmapM_
+            ( \(Position op, Health h, etyD) ->
+                when (v /= 0 && p + v == op) $ do
+                    liftIO $ putStrLn $ show etyA <> " attacking " <> show etyD
+                    etyD A.$= Health (h - damage)
+                    etyA A.$= Actions (as ++ [Attack op])
+                    etyA A.$= Cooldown cooldown
+            )
 
 stepHealth :: System' ()
 stepHealth = A.cmapM_ $ \(Health h, ety) ->
